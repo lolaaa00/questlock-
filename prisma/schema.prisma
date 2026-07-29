@@ -1,0 +1,285 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id              String   @id @default(uuid())
+  wallet_address  String   @unique
+  // v1.2 — optional human display name surfaced on the leaderboard, public
+  // proof certificate, and profile header. Falls back to github_login then
+  // short wallet when null.
+  display_name    String?
+  // v1.2.1 — sponsor trust tier. 'new' (first 3 approvals require admin
+  // confirmation), 'trusted' (sponsor approval fires onchain directly),
+  // 'flagged' (admin confirmation required again), 'suspended' (cannot
+  // approve at all). Counter tracks successful admin-confirmed approvals
+  // toward promotion to 'trusted'.
+  sponsor_trust_level             String  @default("new")
+  successful_confirmed_approvals  Int     @default(0)
+  github_username String?
+  // GitHub OAuth linking (v1.1)
+  github_id           String?  @unique
+  github_login        String?  @unique
+  github_avatar_url   String?
+  github_profile_url  String?
+  github_connected_at DateTime?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  submissions Submission[]
+
+  @@map("users")
+}
+
+model Quest {
+  id               String   @id @default(uuid())
+  onchain_quest_id BigInt?
+  title            String
+  description      String
+  quest_type       String   @default("github_project")
+  requirements_json Json    @default("{}")
+  scoring_rubric_json Json  @default("{}")
+  min_score        Int      @default(70)
+  reward_amount    String
+  reward_token_address String?
+  badge_id         BigInt   @default(1)
+  start_time       DateTime
+  deadline         DateTime
+  max_claims       Int      @default(100)
+  status           String   @default("active")
+  created_by       String
+  // v1.1: populated for sponsor-published quests so the creator-guard can
+  // block both the publishing admin and the original sponsor from
+  // participating in their own quest.
+  sponsor_wallet   String?
+  // v1.2: contract-version routing + per-quest funding accounting + proof type
+  contract_version       Int      @default(1)  // 1 = legacy QuestLockCore, 2 = QuestLockCoreV2
+  funded_quest_id        BigInt?               // onchain id on V2 (NULL for legacy)
+  funding_status         String   @default("LEGACY_SHARED")
+  required_funding       String?
+  funded_amount          String?  @default("0")
+  claimed_amount_onchain String?  @default("0")
+  withdrawn_amount       String?  @default("0")
+  proof_type             String   @default("github_project")
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  submissions    Submission[]
+  duplicate_entries DuplicateIndex[]
+
+  @@map("quests")
+}
+
+model Submission {
+  id               String   @id @default(uuid())
+  quest_id         String
+  wallet_address   String
+  github_username  String
+  repo_url         String
+  demo_url         String?
+  explanation      String?
+  proof_hash       String?
+  score            Int?
+  risk_band        String?
+  status           String   @default("SUBMITTED")
+  failure_reasons_json Json @default("[]")
+  eas_attestation_uid  String?
+  tx_hash_approval     String?
+  tx_hash_claim        String?
+  // v1.2: per-submission proof type + adapter evidence payload
+  proof_type      String   @default("github_project")
+  evidence_json   Json?    @default("{}")
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  quest       Quest        @relation(fields: [quest_id], references: [id])
+  user        User?        @relation(fields: [wallet_address], references: [wallet_address])
+  proof_checks ProofCheck[]
+  appeal      SubmissionAppeal?
+
+  @@unique([quest_id, wallet_address])
+  @@map("submissions")
+}
+
+model SubmissionAppeal {
+  id              String   @id @default(uuid())
+  submission_id   String   @unique
+  wallet_address  String
+  reason          String
+  // PENDING | APPROVED | REJECTED | PROCESSING | APPROVE_FAILED
+  status          String   @default("PENDING")
+  admin_notes     String?
+  reviewed_by     String?
+  reviewed_at     DateTime?
+  // approval outcome (when status === APPROVED)
+  attestation_uid  String?
+  tx_hash_approval String?
+  approve_error    String?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  submission Submission @relation(fields: [submission_id], references: [id])
+
+  @@index([status])
+  @@index([wallet_address])
+  @@map("submission_appeals")
+}
+
+model ProofCheck {
+  id            String   @id @default(uuid())
+  submission_id String
+  check_name    String
+  passed        Boolean
+  points_awarded Int
+  max_points    Int
+  details_json  Json     @default("{}")
+  created_at    DateTime @default(now())
+
+  submission Submission @relation(fields: [submission_id], references: [id])
+
+  @@map("proof_checks")
+}
+
+model DuplicateIndex {
+  id                   String   @id @default(uuid())
+  quest_id             String
+  repo_url_hash        String?
+  github_username_hash String?
+  demo_url_hash        String?
+  wallet_address       String
+  submission_id        String
+  created_at           DateTime @default(now())
+
+  quest Quest @relation(fields: [quest_id], references: [id])
+
+  @@map("duplicate_index")
+}
+
+model ContractEvent {
+  id           String   @id @default(uuid())
+  event_name   String
+  tx_hash      String
+  block_number BigInt
+  quest_id     String?
+  wallet_address String?
+  payload_json Json     @default("{}")
+  created_at   DateTime @default(now())
+
+  @@map("contract_events")
+}
+
+model QuestRequest {
+  id                   String   @id @default(uuid())
+  // sponsor-supplied details
+  title                String
+  description          String
+  requirements         String?
+  reward_amount        String
+  reward_token_address String?
+  badge_id             Int      @default(1)
+  min_score            Int      @default(70)
+  max_claims           Int      @default(100)
+  deadline_days        Int      @default(30)
+  // sponsor identity
+  sponsor_name    String?
+  sponsor_email   String?
+  sponsor_wallet  String
+  // v1.2: proof type + funding fields for sponsor flow
+  proof_type       String   @default("github_project")
+  required_funding String?
+  funded_amount    String?  @default("0")
+  // lifecycle: PENDING_REVIEW | APPROVED | REJECTED | PUBLISHING | PUBLISHED | PUBLISH_FAILED
+  status              String   @default("PENDING_REVIEW")
+  admin_notes         String?
+  rejection_reason    String?
+  // publish artefacts
+  onchain_quest_id   BigInt?
+  published_quest_id String?
+  publish_tx_hash    String?
+  publish_error      String?
+  published_at       DateTime?
+  // audit
+  reviewed_by String?
+  reviewed_at DateTime?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@map("quest_requests")
+}
+
+model SystemLog {
+  id            String   @id @default(uuid())
+  level         String
+  source        String
+  message       String
+  metadata_json Json     @default("{}")
+  created_at    DateTime @default(now())
+
+  @@map("system_logs")
+}
+
+// v1.2 — durable rate-limit bucket (Supabase-backed)
+model RateLimitBucket {
+  id             String   @id @default(uuid())
+  key            String
+  route          String
+  window_start   DateTime
+  window_seconds Int
+  count          Int      @default(0)
+  limit          Int
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+  @@unique([key, route, window_start])
+  @@map("rate_limit_buckets")
+}
+
+// v1.2 — in-app notifications
+model Notification {
+  id             String    @id @default(uuid())
+  wallet_address String
+  type           String
+  title          String
+  message        String
+  metadata_json  Json?     @default("{}")
+  read_at        DateTime?
+  created_at     DateTime  @default(now())
+  @@index([wallet_address, read_at])
+  @@map("notifications")
+}
+
+// v1.2 — Discord OAuth linking
+model DiscordConnection {
+  id                 String    @id @default(uuid())
+  wallet_address     String    @unique
+  discord_id         String    @unique
+  discord_username   String
+  discord_avatar_url String?
+  connected_at       DateTime  @default(now())
+  revoked_at         DateTime?
+  @@map("discord_connections")
+}
+
+// v1.2 — quest templates (admin/sponsor presets)
+model QuestTemplate {
+  id                    String   @id @default(uuid())
+  key                   String   @unique
+  title                 String
+  description           String
+  proof_type            String
+  requirements_json     Json?    @default("{}")
+  scoring_rubric_json   Json?    @default("{}")
+  default_min_score     Int      @default(70)
+  default_badge_id      Int      @default(1)
+  default_reward_amount String   @default("10")
+  default_max_claims    Int      @default(50)
+  default_deadline_days Int      @default(30)
+  suggested_copy_json   Json?    @default("{}")
+  created_at            DateTime @default(now())
+  @@map("quest_templates")
+}

@@ -1,0 +1,17 @@
+.env
+.env.local
+.env.production
+node_modules/
+.next/
+out/
+dist/
+artifacts/
+cache/
+typechain-types/
+coverage/
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+prisma/migrations/*.sql
+deployments/
+HANDOVER.md
